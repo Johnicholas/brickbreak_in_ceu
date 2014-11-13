@@ -1,0 +1,200 @@
+native @nohold _SDL_DestroyWindow();
+native @nohold _SDL_CreateRenderer();
+native @nohold _SDL_DestroyRenderer();
+native @nohold _SDL_RenderFillRect();
+input void SDL_REDRAW;
+input _SDL_MouseMotionEvent* SDL_MOUSEMOTION;
+input int SDL_DT;
+input void SDL_QUIT;
+
+native do
+  SDL_Renderer* REN;
+end
+
+#define SCREEN_W 640
+#define SCREEN_H 480
+
+// ball values
+var float ballX;
+var float ballY;
+var float ballSpeedX;
+var float ballSpeedY;
+
+// paddle values
+#define PADDLE_WIDTH 60
+#define PADDLE_Y (SCREEN_H * 0.9)
+#define PADDLE_HEIGHT 10.0
+var float paddleX;
+
+// brick values
+#define BRICK_W 60.0
+#define BRICK_H 20.0
+#define BRICK_GAP 1.0
+#define BRICK_COLS 10
+#define BRICK_ROWS 10
+#define BRICK_TOPLEFT_X ((SCREEN_W-BRICK_W*BRICK_COLS)*0.5)
+#define BRICK_TOPLEFT_Y 20
+native do
+  int brickGrid[BRICK_ROWS][BRICK_COLS];
+end
+var int bricksLeftInGame;
+
+function (void)=>void resetBricks
+do
+  loop row in BRICK_ROWS do
+    loop col in BRICK_COLS do
+      _brickGrid[row][col] = 1;
+    end
+  end
+end
+
+function (void)=>void ballReset
+do
+  ballX = SCREEN_W / 2;
+  ballY = SCREEN_H * 0.7;
+  ballSpeedX = 0.02;
+  ballSpeedY = 0.4;
+end
+
+var _SDL_Window* win;
+finalize
+  win = _SDL_CreateWindow(
+    "Brickbreak",
+    _SDL_WINDOWPOS_CENTERED,
+    _SDL_WINDOWPOS_CENTERED,
+    SCREEN_W,
+    SCREEN_H,
+    _SDL_WINDOW_SHOWN
+  );
+with
+  _SDL_DestroyWindow(win);
+end
+
+finalize
+  _REN = _SDL_CreateRenderer(win, -1, 0);
+with
+  _SDL_DestroyRenderer(_REN);
+end
+
+resetBricks();
+ballReset();
+
+par/or do
+  await SDL_QUIT;
+with
+  var _SDL_Rect bg;
+  bg.x = 0;
+  bg.y = 0;
+  bg.w = SCREEN_W;
+  bg.h = SCREEN_H;
+  var _SDL_Rect brick;
+  brick.w = BRICK_W - BRICK_GAP;
+  brick.h = BRICK_H - BRICK_GAP;
+  every SDL_REDRAW do
+    _SDL_SetRenderDrawColor(_REN, 0, 0, 50, 255);
+    _SDL_RenderFillRect(_REN, &bg);
+
+    bricksLeftInGame = 0;
+    _SDL_SetRenderDrawColor(_REN, 255, 0, 255, 255);
+
+    loop row in BRICK_ROWS do
+      loop col in BRICK_COLS do
+        if _brickGrid[row][col] == 1 then
+          bricksLeftInGame = bricksLeftInGame + 1;
+          brick.x = BRICK_TOPLEFT_X + col * BRICK_W;
+          brick.y = BRICK_TOPLEFT_Y + row * BRICK_H;
+          _SDL_RenderFillRect(_REN, &brick);
+        end
+      end
+    end
+  end
+with
+  var _SDL_MouseMotionEvent[] m;
+  every m in SDL_MOUSEMOTION do
+    paddleX = m:x;
+  end
+with
+  var _SDL_Rect paddle;
+  paddle.y = PADDLE_Y - PADDLE_HEIGHT / 2;
+  paddle.w = PADDLE_WIDTH;
+  paddle.h = PADDLE_HEIGHT;
+  every SDL_REDRAW do
+    _SDL_SetRenderDrawColor(_REN, 255, 255, 0, 255);
+    paddle.x = paddleX - PADDLE_WIDTH / 2;
+    _SDL_RenderFillRect(_REN, &paddle);
+  end
+with
+  var int dt;
+  every dt in SDL_DT do
+    ballX = ballX + ballSpeedX * dt;
+    ballY = ballY + ballSpeedY * dt;
+    if ballX <= 0 or ballX >= SCREEN_W then // off left or right edge?
+      ballSpeedX = -1 * ballSpeedX; // bounce horizontally
+    end
+    if ballY <= 0.0 then // off top edge?
+      ballSpeedY = -1 * ballSpeedY; // bounce vertically
+    end
+    if ballY >= SCREEN_H then // off bottom edge?
+      ballReset(); // reset ball position
+    end
+    // this part checks ball against brick
+    if ballX >= BRICK_TOPLEFT_X and
+       ballX < BRICK_TOPLEFT_X + BRICK_W * BRICK_COLS and
+       ballY >= BRICK_TOPLEFT_Y and
+       ballY < BRICK_TOPLEFT_Y + BRICK_H * BRICK_ROWS
+    then
+      // being in this means the ball is someplace a brick could be
+      var int hitCol = (ballX - BRICK_TOPLEFT_X) / BRICK_W;
+      var int hitRow = (ballY - BRICK_TOPLEFT_Y) / BRICK_H;
+
+      // hitCol and hitRow are how many bricks in from the left and top
+      // the ball's current position falls within
+      if _brickGrid[hitRow][hitCol] == 1 then // brick still there?
+        _brickGrid[hitRow][hitCol] = 0; // then clear the brick
+        var int prevBallX = ballX - ballSpeedX * 10;
+        var int prevBallY = ballY - ballSpeedY * 10;
+        var int prevCol = (prevBallX - BRICK_TOPLEFT_X) / BRICK_W;
+        var int prevRow = (prevBallY - BRICK_TOPLEFT_Y) / BRICK_H;
+        if prevCol != hitCol then
+          ballSpeedX = -1 * ballSpeedX;
+        end
+        if prevRow != hitRow then
+          ballSpeedY = -1 * ballSpeedY;
+        end
+      end
+    end
+    // this part checks ball against paddle
+    if ballX >= paddleX - PADDLE_WIDTH / 2 and // ball is right of paddle left edge
+       ballX <= paddleX + PADDLE_WIDTH / 2 and // ball is left of paddle right edge
+       ballY >= PADDLE_Y - PADDLE_HEIGHT / 2 and // ball is below paddle top edge
+       ballY <= PADDLE_Y + PADDLE_HEIGHT / 2 and // ball is above paddle bottom edge
+       ballSpeedY >= 0 // ball is moving downward - avoids wiggling
+    then
+      var float distanceFromPaddleMiddle = ballX - paddleX;
+      var float percentageFromMiddle = distanceFromPaddleMiddle / (PADDLE_WIDTH / 2);
+      var float maxLateralSpeed = 0.4;
+      ballSpeedX = percentageFromMiddle * maxLateralSpeed;
+      ballSpeedY = -1 * ballSpeedY; // reverse ball vertical speed
+
+      if bricksLeftInGame == 0 then
+        resetBricks();
+      end
+    end
+  end
+with
+  var _SDL_Rect ball;
+  ball.w = 10;
+  ball.h = 10;
+  every SDL_REDRAW do
+    _SDL_SetRenderDrawColor(_REN, 0, 255, 0, 255);
+    ball.x = ballX - ball.w / 2;
+    ball.y = ballY - ball.h / 2;
+    _SDL_RenderFillRect(_REN, &ball);
+  end
+with
+  every SDL_REDRAW do
+    _SDL_RenderPresent(_REN);
+  end
+end
+
+escape 0;
